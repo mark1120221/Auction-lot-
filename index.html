@@ -32,11 +32,11 @@ pre{white-space:pre-wrap;font-size:12px;margin:8px 0 0;max-height:220px;overflow
 #gh{position:fixed;z-index:50;pointer-events:none;opacity:.9;box-shadow:0 8px 24px rgba(0,0,0,.35);border-radius:8px;overflow:hidden;transform:translate(-50%,-60%)}
 #gh.item{background:var(--sf);padding:10px 16px;border:2px solid var(--ac);font-weight:700}
 </style></head><body>
-<header><h1>Auction Photo Organizer <span class="iid">Phase 2 · 云端 AI 分组</span></h1>
+<header><h1>Auction Photo Organizer <span class="iid">版本 v7 · 11-20 · 逐个保存 ZIP</span></h1>
 <div class="bar">
 <label class="btn p">导入照片<input id="fi" type="file" accept="image/jpeg,image/png,image/heic,image/heif,.jpg,.jpeg,.png,.heic,.heif" multiple hidden></label>
 <button id="bCan" disabled>取消导入</button><button id="bUndo">撤销</button><button id="bSave">保存</button><button id="bBak">备份元数据</button>
-<select id="zl" title="每个 ZIP 的大小上限"><option value="0">单个 ZIP（不拆分）</option><option value="2000">每个 ≤2GB</option><option value="1000">每个 ≤1GB</option><option value="250">每个 ≤250MB</option></select><button id="bZip" class="p">导出 ZIP</button><button id="bCsv">导出对照 CSV</button><button id="bAI" class="p">AI 分组</button></div>
+<select id="zl" title="每个 ZIP 的大小上限"><option value="250">每个 ≤250MB</option><option value="500">每个 ≤500MB</option><option value="1000">每个 ≤1GB</option><option value="2000">每个 ≤2GB</option><option value="0">单个 ZIP（不拆分）</option></select><button id="bZip" class="p">导出 ZIP</button><button id="bCsv">导出对照 CSV</button><button id="bAI" class="p">AI 分组</button></div>
 <div id="st"></div></header>
 <main>
 <details><summary>功能状态（如实说明）</summary><ul>
@@ -52,7 +52,7 @@ pre{white-space:pre-wrap;font-size:12px;margin:8px 0 0;max-height:220px;overflow
 图片序号从 <select id="fs"><option value="1">-1（如 1-1）</option><option value="2">-2（如 1-2，-1 留给首图）</option></select> 起始 <input id="ns" type="number" min="1"> 增量 <input id="ni" type="number" min="1">
 <label class="btn">导入 CSV<input id="ci" type="file" accept=".csv,text/csv" hidden></label><button id="bAp" disabled>确认应用</button></div>
 <div class="iid" style="margin-top:6px">AUTO＝按排列顺序自动编号（忽略锁定值但保留）；MANUAL＝只用手动编号；MIXED＝手动锁定的优先，其余自动并跳过已占用号码。图片序号可在上方选择：从 -1 开始（1-1、1-2…）或从 -2 开始（-1 留给首图）。CSV 列：internal_id,final_lot</div><pre id="cp"></pre><div class="row"><div style="width:100%" class="iid">有拍卖行目录 PDF（含“Lot number”列）？<label class="btn" style="margin-left:6px">从 PDF 读取编号<input id="pdfi" type="file" accept="application/pdf,.pdf" hidden></label> 只读取该列的数字，填入下面的框并自动预览；不会上传 PDF。PDF 按顺序对应拍品，请务必核对第一张图。</div><textarea id="po" rows="3" style="width:100%;font:inherit;padding:8px;border-radius:10px;border:1px solid var(--bd);background:var(--sf);color:var(--tx);-webkit-user-select:text;user-select:text" placeholder="粘贴按顺序排列的最终 Lot 编号（每行一个，或用逗号/空格分隔）"></textarea><button id="bPo">预览按顺序排号</button><button id="bPoAp" disabled>确认应用</button></div><pre id="pp"></pre></details>
-<details><summary>导出检查</summary><pre id="chk">点击“导出 ZIP”时自动检查。</pre></details>
+<details><summary>导出检查</summary><pre id="chk">点击“导出 ZIP”时自动检查。</pre><div id="exp"></div></details>
 <div id="list"></div><div id="nz">拖到这里＝拆分为新拍品</div>
 </main><div id="gh" hidden></div>
 <script>
@@ -264,18 +264,22 @@ if(dl){try{await dl.save({filename:name,data:blob});return true}catch(e){st('保
 const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();return true}
 $('#bCsv').onclick=async()=>{const bad=nums().errs;if(bad.length)st('提示：编号尚有问题，对照表中的部分编号可能为空');await save2('filename_mapping.csv',new Blob([csv()],{type:'text/csv'}))};
 async function origBlob(p){if(p.file)return p.file;const db=await DB(),f=await get(db,'f:'+p.id);if(!f)throw new Error('原图缺失：'+p.name);return f}
-$('#bZip').onclick=async()=>{const e=check();$('#chk').innerHTML=e.length?e.map(x=>'<span class="er">✗ '+esc(x)+'</span>').join('\n'):'✓ 检查通过';
-if(e.length){document.querySelector('#chk').closest('details').open=true;return st(`导出已阻止：${e.length} 个问题，见“导出检查”`)}
+let expParts=[],crcMap=new Map();
+$('#bZip').onclick=async()=>{const e=check();$('#chk').innerHTML=e.length?e.map(x=>'<span class="er">✗ '+esc(x)+'</span>').join('\n'):'✓ 检查通过';const dd=document.querySelector('#chk').closest('details');dd.open=true;
+if(e.length)return st(`导出已阻止：${e.length} 个问题，见“导出检查”`);
 const pl=plan(),tot=pl.reduce((a,x)=>a+x.p.size,0),LIM=(+$('#zl').value)*1048576||Infinity,parts=[];let cur=[],sz=0;
 lots().forEach(l=>{const xs=pl.filter(x=>x.l.id==l.id),s2=xs.reduce((a,x)=>a+x.p.size,0);if(cur.length&&sz+s2>LIM){parts.push(cur);cur=[];sz=0}cur.push(...xs);sz+=s2});if(cur.length)parts.push(cur);
-const mb=Math.round(tot/1048576);st(`共 ${pl.length} 张，约 ${mb} MB，将生成 ${parts.length} 个 ZIP。正在校验原图…`);
-let done=0;try{for(let k=0;k<parts.length;k++){const ents=[];let i=0;
-for(const x of parts[k]){i++;st(`第 ${k+1}/${parts.length} 个 ZIP：读取 ${i}/${parts[k].length}（${x.dir}/${x.nn}）`);const b=await origBlob(x.p);if(b.size!==x.p.size)throw new Error(`${x.p.name} 大小与导入时不一致`);ents.push({name:x.dir+'/'+x.nn,blob:b,size:b.size,crc:await crcOf(b)})}
+$('#bZip').disabled=true;expParts=[];$('#exp').innerHTML='';
+try{let n=0;for(let k=0;k<parts.length;k++){const ents=[];
+for(const x of parts[k]){n++;st(`准备导出：校验原图 ${n}/${pl.length}（${x.dir}/${x.nn}）`);const b=await origBlob(x.p);if(b.size!==x.p.size)throw new Error(`${x.p.name} 大小与导入时不一致`);
+const key=x.pid+'|'+b.size;let c=crcMap.get(key);if(c==null){c=await crcOf(b);crcMap.set(key,c)}ents.push({name:x.dir+'/'+x.nn,blob:b,size:b.size,crc:c})}
 for(const [nm,txt] of [['filename_mapping.csv',csv()],['manifest.txt',`part ${k+1}/${parts.length}\nphotos ${parts[k].length}\n`]]){const b=new Blob([txt]);ents.push({name:nm,blob:b,size:b.size,crc:await crcOf(b)})}
-const zb=zipBlob(ents);st(`第 ${k+1}/${parts.length} 个 ZIP 已生成（${Math.round(zb.size/1048576)} MB），请在弹出的提示里保存…`);
-const ok=await save2(parts.length>1?`Auction_Export_part${k+1}of${parts.length}.zip`:'Auction_Export.zip',zb);if(!ok)return;done+=parts[k].length}
-st(`已提交导出：${done}/${pl.length} 张照片，${lots().length} 个 Lot 文件夹，${parts.length} 个 ZIP。`)}
-catch(err){st('导出失败：'+(err.message||err)+'。可在“每个 ZIP 上限”里选小一点再试。')}};
+const ns=parts[k].map(x=>x.n);expParts.push({ents,name:parts.length>1?`Auction_Export_part${k+1}of${parts.length}.zip`:'Auction_Export.zip',label:`第 ${k+1}/${parts.length} 个 · Lot ${Math.min(...ns)}–${Math.max(...ns)} · ${parts[k].length} 张 · ${Math.round(ents.reduce((a,x)=>a+x.size,0)/1048576)} MB`,done:false})}
+renderExp();st(`准备完成：共 ${pl.length} 张，约 ${Math.round(tot/1048576)} MB，${parts.length} 个 ZIP。请在“导出检查”里逐个点“保存”（Safari 要求每个文件由你亲手点一下）。`);dd.scrollIntoView({behavior:'smooth'})}
+catch(err){st('导出准备失败：'+(err.message||err))}finally{$('#bZip').disabled=false}};
+function renderExp(){$('#exp').innerHTML=expParts.map((p,k)=>`<div class="row"><button data-k="${k}" class="${p.done?'':'p'}">${p.done?'✓ 已点保存 · 再存一次':'保存'}</button><span>${esc(p.label)}</span></div>`).join('')+(expParts.length?'<div class="iid" style="margin-top:6px">每个按钮都要亲手点一下；点完后到 Safari 的下载列表/“文件”里确认文件真的下载下来了，再点下一个。</div>':'')}
+$('#exp').onclick=e=>{const b=e.target.closest('button[data-k]');if(!b)return;const k=+b.dataset.k,pt=expParts[k];if(!pt)return;
+const zb=zipBlob(pt.ents);pt.done=true;save2(pt.name,zb);renderExp();st(`已触发第 ${k+1} 个下载：${pt.name}（${Math.round(zb.size/1048576)} MB）。请确认 Safari 已开始下载。`)};
 /* persistence */
 async function save(quiet){try{const db=await DB(),meta={};for(const id in P){const{thumb,url,file,...m}=P[id];meta[id]=m}
 await put(db,'state',{L,C,meta,at:Date.now()});st(quiet?'已自动保存 · '+new Date().toLocaleTimeString():'已保存到本机浏览器')}catch(e){st('保存失败：'+e.message)}}
